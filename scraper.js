@@ -31,9 +31,7 @@ async function scrapePage(
       const items = [];
 
       // 1. Select the stable container.
-      const searchContainer = document.querySelector(
-        ".search-results-container",
-      );
+      const searchContainer = document.querySelector(".search-results-container");
       if (!searchContainer) {
         console.error("Search results container not found.");
         return items;
@@ -47,11 +45,11 @@ async function scrapePage(
       }
 
       // 3. Select the 2nd div (index 1).
-      const targetDiv = dynamicDivs[1];
+      const searchListDiv = dynamicDivs[1];
 
       // 4. Find the UL element inside the target div.
-      const ulElement = targetDiv.querySelector(
-        'ul[role="list"].wNevqcbRwwxOTFvsgFxLcPHEzidSiKfUWeg.list-style-none',
+      const ulElement = searchListDiv.querySelector(
+        'ul[role="list"].wNevqcbRwwxOTFvsgFxLcPHEzidSiKfUWeg.list-style-none'
       );
       if (!ulElement) {
         console.error("UL element not found in the target div.");
@@ -60,7 +58,7 @@ async function scrapePage(
 
       // 5. Select all list items (<li>) inside the UL element.
       const results = ulElement.querySelectorAll("li");
-      for(const result of results){
+      for (const result of results) {
         const item = {};
         for (let field in template) {
           const element = result.querySelector(template[field]);
@@ -70,34 +68,43 @@ async function scrapePage(
             } else if (element.tagName.toLowerCase() === "a") {
               item[field] = element.getAttribute("href");
             } else {
-              item[field] = element.innerText.trim().split('\n')[0];
+              item[field] = element.innerText.trim().split("\n")[0];
             }
           } else {
             break;
           }
         }
-        if(item.name){
-            items.push(item);
+        if (item.name) {
+          items.push(item);
         }
-      };
+      }
       return items;
     }, template);
 
     scrapedData = scrapedData.concat(data);
     console.log(`Scraped ${data.length} items from current page.`);
 
-    // Pagination handling: update the selector for the next button as needed.
+    // Pagination logic
     if (paginationMethod === "next_button") {
-      const nextButtonSelector = ".next-button-selector"; // Update with the correct selector.
-      const nextButton = await page.$(nextButtonSelector);
-      if (nextButton) {
+      const nextButtonSelector = 'button[aria-label="Next"]';
+
+      // Scroll to the bottom so the "Next" button becomes visible.
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+
+      await new Promise(function(resolve) { 
+        setTimeout(resolve, 1000)
+        });
+
+      try {
+        await page.waitForSelector(nextButtonSelector, { visible: true, timeout: 5000 });
+        console.log("Next button found. Clicking next...");
         await Promise.all([
           page.waitForNavigation({ waitUntil: "networkidle2" }),
-          nextButton.click(),
+          page.click(nextButtonSelector),
         ]);
-      } else {
+      } catch (e) {
+        console.log("Next button not found or not clickable. Ending pagination.");
         hasNextPage = false;
-        console.log("No next page found.");
       }
     } else if (paginationMethod === "infinite_scroll") {
       const previousHeight = await page.evaluate("document.body.scrollHeight");
@@ -112,8 +119,6 @@ async function scrapePage(
       hasNextPage = false;
     }
   }
-
-//   await browser.close();
   return scrapedData;
 }
 
@@ -126,22 +131,16 @@ async function login(page) {
 
   // Type in your LinkedIn username and password.
   // It is best to store these in environment variables for security.
-  await page.type('input[name="session_key"]', process.env.LINKEDIN_USERNAME, {
-    delay: 50,
-  });
-  await page.type(
-    'input[name="session_password"]',
-    process.env.LINKEDIN_PASSWORD,
-    { delay: 50 },
-  );
+  await page.type('input[name="session_key"]', process.env.LINKEDIN_USERNAME, { delay: 50 });
+  await page.type('input[name="session_password"]', process.env.LINKEDIN_PASSWORD, { delay: 50 });
 
   // Click the submit button and wait for navigation.
   await page.click('button[type="submit"]');
-  await page.waitForSelector('.application-outlet'); 
+  await page.waitForSelector(".application-outlet");
 }
 
 (async () => {
-  const browser = await puppeteer.launch({ headless: false, devtools: true  });
+  const browser = await puppeteer.launch({ headless: false, devtools: true });
   const page = await browser.newPage();
 
   // Login to LinkedIn.
