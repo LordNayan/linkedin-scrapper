@@ -1,24 +1,28 @@
 {
   "name": "linkedin-scraper",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "",
+  "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
+    "server": "node server.js",
+    "client": "npm start --prefix frontend",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
     "format": "prettier --write .",
-    "lint": "eslint . ",
-    "lint:fix": "eslint . --fix "
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "puppeteer": "^24.4.0",
-    "ws": "^8.18.1"
+    "ws": "^8.18.1",
+    "concurrently": "^8.2.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.22.0",
