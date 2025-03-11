@@ -15,19 +15,20 @@ function App() {
   const [selectedFields, setSelectedFields] = useState([]);
   const [paginationMethod, setPaginationMethod] = useState("next_button");
   const [pagesCount, setPagesCount] = useState(1);
-  const [scrapedData, setScrapedData] = useState(null);
-  const [isScraping, setIsScraping] = useState(false);
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(0);
   const [ws, setWs] = useState(null);
+  const [tableData, setTableData] = useState([]);
+  const [isScraping, setIsScraping] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const rowsPerPage = 10;
 
-  // Validate that URL is a proper LinkedIn URL.
+  // Validate URL is a proper LinkedIn URL.
   const isValidLinkedInUrl = (link) => {
     const regex = /^https:\/\/(www\.)?linkedin\.com\/.+/;
     return regex.test(link);
   };
 
-  // Toggle field selection.
   const handleFieldToggle = (field) => {
     if (selectedFields.includes(field)) {
       setSelectedFields(selectedFields.filter((f) => f !== field));
@@ -36,19 +37,33 @@ function App() {
     }
   };
 
-  // Select or clear all fields.
   const handleSelectAll = () => setSelectedFields(predefinedFields);
   const handleClearAll = () => setSelectedFields([]);
 
-  // Connect to a WebSocket endpoint for real-time progress updates.
+  // Establish a WebSocket connection for real-time progress updates.
   useEffect(() => {
     if (isScraping) {
-      const socket = new WebSocket("ws://localhost:3000/ws"); // Adjust URL as needed.
+      const socket = new WebSocket("ws://localhost:4000"); // Adjust URL as needed.
       socket.onopen = () => console.log("WebSocket connected");
       socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.pagesScraped !== undefined) {
-          setProgress(data.pagesScraped);
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.stopScraping) {
+            setIsScraping(false);
+            if (ws) ws.close();
+          }
+          // Expecting { pagesScraped: number, pageData: [...] }
+          else if (
+            data.pagesScraped !== undefined &&
+            data.pageData !== undefined
+          ) {
+            setProgress(data.pagesScraped);
+            // Append new data from this page.
+            setTableData((prev) => [...prev, ...data.pageData]);
+          }
+        } catch (err) {
+          console.error("Error parsing WebSocket message", err);
         }
       };
       socket.onerror = (err) => console.error("WebSocket error:", err);
@@ -59,19 +74,14 @@ function App() {
     }
   }, [isScraping]);
 
-  // Handler to stop scraping (only for infinite scroll).
-  const handleStopScraping = async () => {
-    // Send a stop signal to the backend if required.
+  const handleStopScraping = () => {
     setIsScraping(false);
     setError("Scraping stopped by user.");
-    if (ws) {
-      ws.close();
-    }
+    if (ws) ws.close();
   };
 
-  // Export scraped data as JSON file.
   const handleExport = () => {
-    const blob = new Blob([JSON.stringify(scrapedData, null, 2)], {
+    const blob = new Blob([JSON.stringify(tableData, null, 2)], {
       type: "application/json",
     });
     const urlBlob = URL.createObjectURL(blob);
@@ -82,11 +92,9 @@ function App() {
     URL.revokeObjectURL(urlBlob);
   };
 
-  // Handle form submission to start scraping.
   const handleScrape = async (e) => {
     e.preventDefault();
 
-    // Validate URL and required fields.
     if (!isValidLinkedInUrl(url)) {
       setError("Please enter a valid LinkedIn URL.");
       return;
@@ -99,11 +107,10 @@ function App() {
       setError("Please enter a valid number of pages (minimum 1).");
       return;
     }
-
     setError(null);
     setIsScraping(true);
-    setScrapedData(null);
     setProgress(0);
+    setTableData([]); // Reset table data for a new scrape.
 
     const payload = {
       url,
@@ -119,17 +126,66 @@ function App() {
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
-        throw new Error("Error fetching scraped data.");
+        throw new Error("Error starting scraping.");
       }
-      const data = await response.json();
-      setScrapedData(data);
+      // Final data is expected via WebSocket updates.
     } catch (err) {
       setError(err.message);
+      setIsScraping(false);
+      if (ws) ws.close();
     }
-    setIsScraping(false);
-    if (ws) {
-      ws.close();
-    }
+  };
+
+  // Render dynamic table from tableData.
+  const renderTable = () => {
+    if (tableData.length === 0) return null;
+    const headers = Object.keys(tableData[0]);
+    const totalPages = Math.ceil(tableData.length / rowsPerPage);
+    const indexOfLastRow = currentPage * rowsPerPage;
+    const indexOfFirstRow = indexOfLastRow - rowsPerPage;
+    const currentRows = tableData.slice(indexOfFirstRow, indexOfLastRow);
+
+    return (
+      <div className="table-container">
+        <table className="data-table">
+          <thead>
+            <tr>
+              {headers.map((header) => (
+                <th key={header}>{header}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {currentRows.map((row, idx) => (
+              <tr key={idx}>
+                {headers.map((header, hIdx) => (
+                  <td key={hIdx}>{row[header]}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="pagination-controls">
+          <button
+            onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+            disabled={currentPage === 1}
+          >
+            Prev
+          </button>
+          <span>
+            Page {currentPage} of {totalPages}
+          </span>
+          <button
+            onClick={() =>
+              setCurrentPage((prev) => Math.min(prev + 1, totalPages))
+            }
+            disabled={currentPage === totalPages}
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -197,6 +253,7 @@ function App() {
             id="pagination"
             value={paginationMethod}
             onChange={(e) => setPaginationMethod(e.target.value)}
+            className="styled-select"
           >
             <option value="next_button">Next Button</option>
             <option value="infinite_scroll">Infinite Scroll</option>
@@ -211,7 +268,20 @@ function App() {
               type="number"
               min="1"
               value={pagesCount}
-              onChange={(e) => setPagesCount(parseInt(e.target.value))}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (value === "") {
+                  // Allow empty input while typing
+                  setPagesCount("");
+                } else {
+                  setPagesCount(parseInt(value));
+                }
+              }}
+              onBlur={(e) => {
+                if (e.target.value === "" || parseInt(e.target.value) < 1) {
+                  setPagesCount(1);
+                }
+              }}
               required
             />
           </div>
@@ -238,16 +308,16 @@ function App() {
         </div>
       </form>
 
-      {isScraping && (
+      {!progress && (
         <div className="progress-indicator">
           <p>Pages scraped: {progress}</p>
         </div>
       )}
 
-      {scrapedData && (
-        <div className="output-container">
+      {tableData.length > 0 && (
+        <div className="table-container">
           <h2>Scraped Data</h2>
-          <pre>{JSON.stringify(scrapedData, null, 2)}</pre>
+          {renderTable()}
           <button
             type="button"
             className="export-button"

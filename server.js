@@ -1,5 +1,7 @@
 // server.js
+
 const express = require("express");
+const bodyParser = require("body-parser");
 const puppeteer = require("puppeteer");
 const dotenv = require("dotenv");
 const cors = require("cors");
@@ -7,222 +9,227 @@ const { Server: WebSocketServer } = require("ws");
 
 dotenv.config();
 
-// --- Field Mapping ---
-// Map frontend field names to their CSS selectors.
-// (Adjust selectors as needed.)
-const mapping = {
-  "Name": "div.mObvyAprzMQhIjyCYKseWKgPjGYfGfWonIA a.qWdktykoofflQLeAqgrGCGVRzijLcViJI span",
-  "Profile": "a.qWdktykoofflQLeAqgrGCGVRzijLcViJI",
-  "Photo": "img.presence-entity__image",
-  "Headline": "div.FBhjEoyAzmTuyITebnedTzGaSyYHjnEDsjUEY",
-  "Location": "div.AZoaSfcPFEqGecZFTogUQbRlYXHDrBLqvghsY",
-  "Company": "div.someCompanySelector" // Adjust as needed.
+const app = express();
+app.use(bodyParser.json());
+app.use(cors());
+
+// Predefined mapping from field names to CSS selectors.
+const fieldMappings = {
+  Name: "div.mObvyAprzMQhIjyCYKseWKgPjGYfGfWonIA a.qWdktykoofflQLeAqgrGCGVRzijLcViJI span",
+  Profile: "a.qWdktykoofflQLeAqgrGCGVRzijLcViJI",
+  Photo: "img.presence-entity__image",
+  Headline: "div.FBhjEoyAzmTuyITebnedTzGaSyYHjnEDsjUEY",
+  Company: "div.someCompanyClass", // Update with an appropriate selector.
+  Location: "div.AZoaSfcPFEqGecZFTogUQbRlYXHDrBLqvghsY",
 };
 
 // Global flag for cancellation.
 let stopScraping = false;
 
-// --- WebSocket Progress Broadcast ---
-let wss; // We'll initialize this later.
-function broadcastProgress(progress) {
-  const message = JSON.stringify({ pagesScraped: progress });
-  if (wss) {
-    wss.clients.forEach((client) => {
-      if (client.readyState === client.OPEN) {
-        client.send(message);
-      }
-    });
-  }
-}
-function sendProgressUpdate(progress) {
-  console.log(`Sending progress update: ${progress}`);
-  broadcastProgress(progress);
+// --- Set up WebSocket Server ---
+let webSocketClients = [];
+const wss = new WebSocketServer({ port: 4000 });
+wss.on("connection", (ws) => {
+  webSocketClients.push(ws);
+  ws.on("close", () => {
+    webSocketClients = webSocketClients.filter((client) => client !== ws);
+  });
+});
+
+// Broadcast a message to all connected WebSocket clients.
+function broadcast(message) {
+  webSocketClients.forEach((ws) => {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(message);
+    }
+  });
 }
 
-// --- Scraper Functions ---
+// --- Scraping Function ---
 async function scrapePage(page, url, template, paginationMethod, pagesCount) {
   await page.goto(url, { waitUntil: "networkidle2" });
+
   let scrapedData = [];
+  let currentPage = 1;
   let hasNextPage = true;
-  let currentPage = 0;
 
-  if (paginationMethod === "next_button") {
-    while (hasNextPage && currentPage < pagesCount) {
-      await page.waitForSelector("body");
+  while (
+    hasNextPage &&
+    !stopScraping &&
+    (paginationMethod === "infinite_scroll" || currentPage <= pagesCount)
+  ) {
+    // Extract page data using the provided template.
+    let pageData = await page.evaluate((template) => {
+      const items = [];
+      const searchContainer = document.querySelector(
+        ".search-results-container"
+      );
+      if (!searchContainer) return items;
+      const dynamicDivs = searchContainer.querySelectorAll("div[id]");
+      if (dynamicDivs.length < 2) return items;
+      const searchListDiv = dynamicDivs[1];
+      const ulElement = searchListDiv.querySelector(
+        'ul[role="list"].wNevqcbRwwxOTFvsgFxLcPHEzidSiKfUWeg.list-style-none'
+      );
+      if (!ulElement) return items;
+      const results = ulElement.querySelectorAll("li");
+      results.forEach((result) => {
+        let item = {};
+        for (let field in template) {
+          let element = result.querySelector(template[field]);
+          if (element) {
+            if (element.tagName.toLowerCase() === "img") {
+              item[field] = element.getAttribute("src");
+            } else if (element.tagName.toLowerCase() === "a") {
+              item[field] = element.getAttribute("href");
+            } else {
+              item[field] = element.innerText.trim().split("\n")[0];
+            }
+          }
+        }
+        if (Object.keys(item).length > 0) items.push(item);
+      });
+      return items;
+    }, template);
 
-      // Extract data on current page.
-      const data = await page.evaluate((template) => {
+    // If the first page returns zero results, wait and retry once.
+    if (currentPage === 1 && pageData.length === 0) {
+      await sleep(2000);
+      pageData = await page.evaluate((template) => {
         const items = [];
-        const searchContainer = document.querySelector(".search-results-container");
-        if (!searchContainer) {
-          console.error("Search results container not found.");
-          return items;
-        }
+        const searchContainer = document.querySelector(
+          ".search-results-container"
+        );
+        if (!searchContainer) return items;
         const dynamicDivs = searchContainer.querySelectorAll("div[id]");
-        if (dynamicDivs.length < 2) {
-          console.error("Not enough dynamic divs found.");
-          return items;
-        }
+        if (dynamicDivs.length < 2) return items;
         const searchListDiv = dynamicDivs[1];
         const ulElement = searchListDiv.querySelector(
           'ul[role="list"].wNevqcbRwwxOTFvsgFxLcPHEzidSiKfUWeg.list-style-none'
         );
-        if (!ulElement) {
-          console.error("UL element not found.");
-          return items;
-        }
+        if (!ulElement) return items;
         const results = ulElement.querySelectorAll("li");
-        results.forEach(result => {
-          const item = {};
-          // For each field requested, extract the corresponding data.
-          for (let key in template) {
-            debugger;
-            const element = result.querySelector(template[key]);
+        results.forEach((result) => {
+          let item = {};
+          for (let field in template) {
+            let element = result.querySelector(template[field]);
             if (element) {
               if (element.tagName.toLowerCase() === "img") {
-                item[key] = element.getAttribute("src");
+                item[field] = element.getAttribute("src");
               } else if (element.tagName.toLowerCase() === "a") {
-                item[key] = element.getAttribute("href");
+                item[field] = element.getAttribute("href");
               } else {
-                item[key] = element.innerText.trim().split("\n")[0];
+                item[field] = element.innerText.trim().split("\n")[0];
               }
             }
           }
-          // Only push item if at least the "name" field exists.
-          if (item.name) {
-            items.push(item);
-          }
+          if (Object.keys(item).length > 0) items.push(item);
         });
         return items;
       }, template);
+    }
 
-      scrapedData = scrapedData.concat(data);
-      currentPage++;
-      sendProgressUpdate(currentPage);
-      console.log(`Page ${currentPage}: Scraped ${data.length} items.`);
+    scrapedData = scrapedData.concat(pageData);
+    // Broadcast the progress update including pages scraped count and data for this page.
+    broadcast(
+      JSON.stringify({
+        pagesScraped: currentPage,
+        pageData,
+        stopScraping: false,
+      })
+    );
 
-      // Attempt to click the "Next" button.
-      const nextButtonSelector = 'button[aria-label="Next"]';
+    currentPage++;
+
+    // Pagination handling.
+    if (paginationMethod === "next_button") {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      try {
-        await page.waitForSelector(nextButtonSelector, { visible: true, timeout: 5000 });
+      await sleep(1000);
+      const nextButton = await page.$('button[aria-label="Next"]');
+      if (nextButton) {
         await Promise.all([
           page.waitForNavigation({ waitUntil: "networkidle2" }),
-          page.click(nextButtonSelector)
+          nextButton.click(),
         ]);
-      } catch (e) {
-        console.log("Next button not found or not clickable. Ending pagination.");
+      } else {
         hasNextPage = false;
       }
-    }
-  } else if (paginationMethod === "infinite_scroll") {
-    while (hasNextPage && !stopScraping) {
-      await page.waitForSelector("body");
-
-      const data = await page.evaluate((template) => {
-        const items = [];
-        const searchContainer = document.querySelector(".search-results-container");
-        if (!searchContainer) {
-          console.error("Search results container not found.");
-          return items;
-        }
-        const dynamicDivs = searchContainer.querySelectorAll("div[id]");
-        if (dynamicDivs.length < 2) {
-          console.error("Not enough dynamic divs found.");
-          return items;
-        }
-        const searchListDiv = dynamicDivs[1];
-        const ulElement = searchListDiv.querySelector(
-          'ul[role="list"].wNevqcbRwwxOTFvsgFxLcPHEzidSiKfUWeg.list-style-none'
-        );
-        if (!ulElement) {
-          console.error("UL element not found.");
-          return items;
-        }
-        const results = ulElement.querySelectorAll("li");
-        results.forEach(result => {
-          const item = {};
-          for (let key in template) {
-            const element = result.querySelector(template[key]);
-            if (element) {
-              if (element.tagName.toLowerCase() === "img") {
-                item[key] = element.getAttribute("src");
-              } else if (element.tagName.toLowerCase() === "a") {
-                item[key] = element.getAttribute("href");
-              } else {
-                item[key] = element.innerText.trim().split("\n")[0];
-              }
-            }
-          }
-          if (item.name) {
-            items.push(item);
-          }
-        });
-        return items;
-      }, template);
-
-      scrapedData = scrapedData.concat(data);
-      currentPage++;
-      sendProgressUpdate(currentPage);
-      console.log(`Page ${currentPage}: Scraped ${data.length} items.`);
-
-      const previousHeight = await page.evaluate("document.body.scrollHeight");
+    } else if (paginationMethod === "infinite_scroll") {
+      let previousHeight = await page.evaluate("document.body.scrollHeight");
       await page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      const newHeight = await page.evaluate("document.body.scrollHeight");
+      await sleep(2000);
+      let newHeight = await page.evaluate("document.body.scrollHeight");
       if (newHeight === previousHeight) {
-        console.log("Reached end of infinite scroll.");
         hasNextPage = false;
       }
+    } else {
+      hasNextPage = false;
     }
   }
+
+  broadcast(JSON.stringify({ stopScraping: true }));
   return scrapedData;
 }
 
 // Login helper
 async function login(page) {
-  await page.goto("https://www.linkedin.com/login", { waitUntil: "networkidle2" });
-  await page.type('input[name="session_key"]', process.env.LINKEDIN_USERNAME, { delay: 50 });
-  await page.type('input[name="session_password"]', process.env.LINKEDIN_PASSWORD, { delay: 50 });
+  await page.goto("https://www.linkedin.com/login", {
+    waitUntil: "networkidle2",
+  });
+  await page.type('input[name="session_key"]', process.env.LINKEDIN_USERNAME, {
+    delay: 50,
+  });
+  await page.type(
+    'input[name="session_password"]',
+    process.env.LINKEDIN_PASSWORD,
+    { delay: 50 }
+  );
   await page.click('button[type="submit"]');
   await page.waitForSelector(".application-outlet");
 }
 
-// --- Express Server Setup ---
-const app = express();
-app.use(express.json());
-app.use(cors());
-
-// POST /api/scrape endpoint
+// --- API Endpoint ---
 app.post("/api/scrape", async (req, res) => {
   const { url, fields, paginationMethod, pagesCount } = req.body;
-  // Build a template from the selected fields.
+  if (!url || !fields || fields.length === 0) {
+    return res.status(400).json({ error: "Invalid parameters" });
+  }
+
+  // Build the template object using the field mappings.
   const template = {};
-  fields.forEach(field => {
-    if (mapping[field]) {
-      // Use lower-case keys for consistency.
-      template[field.toLowerCase()] = mapping[field];
+  fields.forEach((field) => {
+    if (fieldMappings[field]) {
+      template[field] = fieldMappings[field];
     }
   });
 
   let browser;
   stopScraping = false; // reset cancellation flag
+
   try {
-    browser = await puppeteer.launch({ headless: false });
+    browser = await puppeteer.launch({ headless: true });
     const page = await browser.newPage();
 
     // Login to LinkedIn.
     await login(page);
+
     // Scrape the data.
-    const scrapedData = await scrapePage(page, url, template, paginationMethod, pagesCount);
-    res.json(scrapedData);
-  } catch (error) {
-    console.error("Error during scraping:", error);
-    res.status(500).json({ error: error.message });
-  } finally {
-    if (browser) await browser.close();
+    const data = await scrapePage(
+      page,
+      url,
+      template,
+      paginationMethod,
+      pagesCount
+    );
+    await browser.close();
+
+    res.json({
+      data,
+      pagesScraped: paginationMethod === "next_button" ? pagesCount : undefined,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -232,18 +239,11 @@ app.post("/api/stop", (req, res) => {
   res.json({ message: "Scraping stopped" });
 });
 
-// Start Express server.
-const port = process.env.PORT || 3000;
-const server = app.listen(port, () => {
-  console.log(`Express server listening on port ${port}`);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Express server listening on port ${PORT}`);
 });
 
-// --- WebSocket Server Setup ---
-// Attach WebSocket server to the same HTTP server at path '/ws'.
-wss = new WebSocketServer({ server, path: "/ws" });
-wss.on("connection", (ws) => {
-  console.log("WebSocket client connected.");
-  ws.on("close", () => {
-    console.log("WebSocket client disconnected.");
-  });
-});
+async function sleep(ms) {
+  return await new Promise((resolve, reject) => setTimeout(resolve, ms));
+}
