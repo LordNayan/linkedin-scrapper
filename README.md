@@ -23,7 +23,7 @@ This repository contains a LinkedIn scraper application that uses:
    ```
    These are used by Puppeteer to log in to LinkedIn.
 
-### Installation
+## Installation
 
 1. **Clone the Repository**  
    ```bash
@@ -48,7 +48,7 @@ This repository contains a LinkedIn scraper application that uses:
    cd ..
    ```
 
-### Running the Application
+## Running the Application
 
 From the root directory, you can run both the Express server and the React frontend simultaneously with a single command:
 
@@ -66,7 +66,7 @@ http://localhost:3000
 ```
 to access the React UI for the LinkedIn scraper.
 
-### Additional Scripts
+## Additional Scripts
 
 - **`npm run start`**  
   Runs only the Express server (`server.js`).
@@ -86,7 +86,12 @@ to access the React UI for the LinkedIn scraper.
 - **`npm run lint:fix`**  
   Attempts to automatically fix lint issues.
 
-### Notes
+## Points to Remember
+
+- This application only works for LinkedIn People pages like the one shown in the attached video.
+- This uses static class name tags wo ensure that the script will work even after dynamic tags are changed by LinkedIn.
+
+## Notes
 
 - Make sure you keep your `.env` file out of version control (as indicated by the included `.gitignore`) to protect sensitive credentials.
 - If you need to change ports or other settings, update them in both your Express code (`server.js`) and your frontend (for example, adjusting API calls from `http://localhost:3001` if you choose a different port).
