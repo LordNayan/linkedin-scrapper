@@ -1,16 +1,9 @@
 import React, { useState, useEffect } from "react";
 import "./App.css";
 
-const predefinedFields = [
-  "Name",
-  "Profile",
-  "Photo",
-  "Headline",
-  "Company",
-  "Location",
-];
+const predefinedFields = ["Name", "Profile", "Photo", "Headline", "Location"];
 
-function App() {
+const App = () => {
   const [url, setUrl] = useState("");
   const [selectedFields, setSelectedFields] = useState([]);
   const [paginationMethod, setPaginationMethod] = useState("next_button");
@@ -21,20 +14,22 @@ function App() {
   const [tableData, setTableData] = useState([]);
   const [isScraping, setIsScraping] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+
   const rowsPerPage = 10;
 
-  // Validate URL is a proper LinkedIn URL.
+  // Validate that the URL is a proper LinkedIn URL.
   const isValidLinkedInUrl = (link) => {
     const regex = /^https:\/\/(www\.)?linkedin\.com\/.+/;
     return regex.test(link);
   };
 
+  // Toggle field selection.
   const handleFieldToggle = (field) => {
-    if (selectedFields.includes(field)) {
-      setSelectedFields(selectedFields.filter((f) => f !== field));
-    } else {
-      setSelectedFields([...selectedFields, field]);
-    }
+    setSelectedFields((prevSelected) =>
+      prevSelected.includes(field)
+        ? prevSelected.filter((f) => f !== field)
+        : [...prevSelected, field]
+    );
   };
 
   const handleSelectAll = () => setSelectedFields(predefinedFields);
@@ -42,48 +37,48 @@ function App() {
 
   // Establish a WebSocket connection for real-time progress updates.
   useEffect(() => {
-    if (isScraping) {
-      const socket = new WebSocket("ws://localhost:4000"); // Adjust URL as needed.
-      socket.onopen = () => console.log("WebSocket connected");
-      socket.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
+    if (!isScraping) return;
 
-          if (data.stopScraping) {
-            setIsScraping(false);
-            if (ws) ws.close();
-          }
-          // Expecting { pagesScraped: number, pageData: [...] }
-          else if (
-            data.pagesScraped !== undefined &&
-            data.pageData !== undefined
-          ) {
-            setProgress(data.pagesScraped);
-            // Append new data from this page.
-            setTableData((prev) => [...prev, ...data.pageData]);
-          }
-        } catch (err) {
-          console.error("Error parsing WebSocket message", err);
+    const socket = new WebSocket("ws://localhost:4000");
+    socket.onopen = () => console.log("WebSocket connected");
+
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.stopScraping) {
+          setIsScraping(false);
+          socket.close();
+        } else if (
+          data.pagesScraped !== undefined &&
+          data.pageData !== undefined
+        ) {
+          setProgress(data.pagesScraped);
+          setTableData((prevData) => [...prevData, ...data.pageData]);
         }
-      };
-      socket.onerror = (err) => console.error("WebSocket error:", err);
-      setWs(socket);
-      return () => {
-        socket.close();
-      };
-    }
+      } catch (err) {
+        console.error("Error parsing WebSocket message", err);
+      }
+    };
+
+    socket.onerror = (err) => console.error("WebSocket error:", err);
+    setWs(socket);
+
+    return () => {
+      socket.close();
+    };
   }, [isScraping]);
 
+  // Handler to stop the scraping process.
   const handleStopScraping = () => {
     setIsScraping(false);
     setError("Scraping stopped by user.");
     if (ws) ws.close();
   };
 
+  // Handler to export scraped data as JSON.
   const handleExport = () => {
-    const blob = new Blob([JSON.stringify(tableData, null, 2)], {
-      type: "application/json",
-    });
+    const json = JSON.stringify(tableData, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
     const urlBlob = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = urlBlob;
@@ -92,6 +87,7 @@ function App() {
     URL.revokeObjectURL(urlBlob);
   };
 
+  // Handler to initiate scraping.
   const handleScrape = async (e) => {
     e.preventDefault();
 
@@ -107,10 +103,13 @@ function App() {
       setError("Please enter a valid number of pages (minimum 1).");
       return;
     }
+
+    // Reset state before scraping.
     setError(null);
     setIsScraping(true);
     setProgress(0);
-    setTableData([]); // Reset table data for a new scrape.
+    setTableData([]);
+    setCurrentPage(1);
 
     const payload = {
       url,
@@ -120,15 +119,16 @@ function App() {
     };
 
     try {
-      const response = await fetch("http://localhost:3000/api/scrape", {
+      const response = await fetch("http://localhost:3001/api/scrape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+
       if (!response.ok) {
         throw new Error("Error starting scraping.");
       }
-      // Final data is expected via WebSocket updates.
+      // Final data is received via WebSocket updates.
     } catch (err) {
       setError(err.message);
       setIsScraping(false);
@@ -136,7 +136,7 @@ function App() {
     }
   };
 
-  // Render dynamic table from tableData.
+  // Render table with pagination.
   const renderTable = () => {
     if (tableData.length === 0) return null;
     const headers = Object.keys(tableData[0]);
@@ -270,15 +270,10 @@ function App() {
               value={pagesCount}
               onChange={(e) => {
                 const value = e.target.value;
-                if (value === "") {
-                  // Allow empty input while typing
-                  setPagesCount("");
-                } else {
-                  setPagesCount(parseInt(value));
-                }
+                setPagesCount(value === "" ? "" : parseInt(value, 10));
               }}
               onBlur={(e) => {
-                if (e.target.value === "" || parseInt(e.target.value) < 1) {
+                if (e.target.value === "" || parseInt(e.target.value, 10) < 1) {
                   setPagesCount(1);
                 }
               }}
@@ -308,7 +303,7 @@ function App() {
         </div>
       </form>
 
-      {!progress && (
+      {isScraping && (
         <div className="progress-indicator">
           <p>Pages scraped: {progress}</p>
         </div>
@@ -329,6 +324,6 @@ function App() {
       )}
     </div>
   );
-}
+};
 
 export default App;

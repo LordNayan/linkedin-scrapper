@@ -1,5 +1,3 @@
-// server.js
-
 const express = require("express");
 const bodyParser = require("body-parser");
 const puppeteer = require("puppeteer");
@@ -13,20 +11,19 @@ const app = express();
 app.use(bodyParser.json());
 app.use(cors());
 
-// Predefined mapping from field names to CSS selectors.
+// Predefined mapping from field names to stable CSS selectors.
 const fieldMappings = {
-  Name: "div.mObvyAprzMQhIjyCYKseWKgPjGYfGfWonIA a.qWdktykoofflQLeAqgrGCGVRzijLcViJI span",
-  Profile: "a.qWdktykoofflQLeAqgrGCGVRzijLcViJI",
+  Name: "div.t-roman.t-sans a[data-test-app-aware-link] span[aria-hidden='true']",
+  Profile: "div.t-roman.t-sans a[data-test-app-aware-link]",
   Photo: "img.presence-entity__image",
-  Headline: "div.FBhjEoyAzmTuyITebnedTzGaSyYHjnEDsjUEY",
-  Company: "div.someCompanyClass", // Update with an appropriate selector.
-  Location: "div.AZoaSfcPFEqGecZFTogUQbRlYXHDrBLqvghsY",
+  Headline: "div.pt3.pb3.t-12.t-black--light > div > div:nth-child(2)",
+  Location: "div.pt3.pb3.t-12.t-black--light > div > div:nth-child(3)",
 };
 
 // Global flag for cancellation.
 let stopScraping = false;
 
-// --- Set up WebSocket Server ---
+// Setup WebSocket server for real-time progress updates.
 let webSocketClients = [];
 const wss = new WebSocketServer({ port: 4000 });
 wss.on("connection", (ws) => {
@@ -45,7 +42,29 @@ function broadcast(message) {
   });
 }
 
-// --- Scraping Function ---
+// Sleep helper function.
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Login helper to sign into LinkedIn.
+async function login(page) {
+  await page.goto("https://www.linkedin.com/login", {
+    waitUntil: "networkidle2",
+  });
+  await page.type('input[name="session_key"]', process.env.LINKEDIN_USERNAME, {
+    delay: 50,
+  });
+  await page.type(
+    'input[name="session_password"]',
+    process.env.LINKEDIN_PASSWORD,
+    { delay: 50 }
+  );
+  await page.click('button[type="submit"]');
+  await page.waitForSelector(".application-outlet");
+}
+
+// Core scraping function.
 async function scrapePage(page, url, template, paginationMethod, pagesCount) {
   await page.goto(url, { waitUntil: "networkidle2" });
 
@@ -69,30 +88,34 @@ async function scrapePage(page, url, template, paginationMethod, pagesCount) {
       if (dynamicDivs.length < 2) return items;
       const searchListDiv = dynamicDivs[1];
       const ulElement = searchListDiv.querySelector(
-        'ul[role="list"].wNevqcbRwwxOTFvsgFxLcPHEzidSiKfUWeg.list-style-none'
+        "ul[role='list'].list-style-none"
       );
       if (!ulElement) return items;
+
       const results = ulElement.querySelectorAll("li");
       results.forEach((result) => {
-        let item = {};
+        const item = {};
         for (let field in template) {
-          let element = result.querySelector(template[field]);
+          const element = result.querySelector(template[field]);
           if (element) {
-            if (element.tagName.toLowerCase() === "img") {
+            const tagName = element.tagName.toLowerCase();
+            if (tagName === "img") {
               item[field] = element.getAttribute("src");
-            } else if (element.tagName.toLowerCase() === "a") {
+            } else if (tagName === "a") {
               item[field] = element.getAttribute("href");
             } else {
               item[field] = element.innerText.trim().split("\n")[0];
             }
           }
         }
-        if (Object.keys(item).length > 0) items.push(item);
+        if (Object.keys(item).length > 0) {
+          items.push(item);
+        }
       });
       return items;
     }, template);
 
-    // If the first page returns zero results, wait and retry once.
+    // If the first page returns no results, wait and retry once.
     if (currentPage === 1 && pageData.length === 0) {
       await sleep(2000);
       pageData = await page.evaluate((template) => {
@@ -110,27 +133,31 @@ async function scrapePage(page, url, template, paginationMethod, pagesCount) {
         if (!ulElement) return items;
         const results = ulElement.querySelectorAll("li");
         results.forEach((result) => {
-          let item = {};
+          const item = {};
           for (let field in template) {
-            let element = result.querySelector(template[field]);
+            const element = result.querySelector(template[field]);
             if (element) {
-              if (element.tagName.toLowerCase() === "img") {
+              const tagName = element.tagName.toLowerCase();
+              if (tagName === "img") {
                 item[field] = element.getAttribute("src");
-              } else if (element.tagName.toLowerCase() === "a") {
+              } else if (tagName === "a") {
                 item[field] = element.getAttribute("href");
               } else {
                 item[field] = element.innerText.trim().split("\n")[0];
               }
             }
           }
-          if (Object.keys(item).length > 0) items.push(item);
+          if (Object.keys(item).length > 0) {
+            items.push(item);
+          }
         });
         return items;
       }, template);
     }
 
     scrapedData = scrapedData.concat(pageData);
-    // Broadcast the progress update including pages scraped count and data for this page.
+
+    // Broadcast progress update.
     broadcast(
       JSON.stringify({
         pagesScraped: currentPage,
@@ -141,7 +168,7 @@ async function scrapePage(page, url, template, paginationMethod, pagesCount) {
 
     currentPage++;
 
-    // Pagination handling.
+    // Handle pagination.
     if (paginationMethod === "next_button") {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       await sleep(1000);
@@ -155,10 +182,10 @@ async function scrapePage(page, url, template, paginationMethod, pagesCount) {
         hasNextPage = false;
       }
     } else if (paginationMethod === "infinite_scroll") {
-      let previousHeight = await page.evaluate("document.body.scrollHeight");
+      const previousHeight = await page.evaluate("document.body.scrollHeight");
       await page.evaluate("window.scrollTo(0, document.body.scrollHeight)");
       await sleep(2000);
-      let newHeight = await page.evaluate("document.body.scrollHeight");
+      const newHeight = await page.evaluate("document.body.scrollHeight");
       if (newHeight === previousHeight) {
         hasNextPage = false;
       }
@@ -167,28 +194,12 @@ async function scrapePage(page, url, template, paginationMethod, pagesCount) {
     }
   }
 
+  // Signal completion.
   broadcast(JSON.stringify({ stopScraping: true }));
   return scrapedData;
 }
 
-// Login helper
-async function login(page) {
-  await page.goto("https://www.linkedin.com/login", {
-    waitUntil: "networkidle2",
-  });
-  await page.type('input[name="session_key"]', process.env.LINKEDIN_USERNAME, {
-    delay: 50,
-  });
-  await page.type(
-    'input[name="session_password"]',
-    process.env.LINKEDIN_PASSWORD,
-    { delay: 50 }
-  );
-  await page.click('button[type="submit"]');
-  await page.waitForSelector(".application-outlet");
-}
-
-// --- API Endpoint ---
+// API Endpoint for starting the scraping process.
 app.post("/api/scrape", async (req, res) => {
   const { url, fields, paginationMethod, pagesCount } = req.body;
   if (!url || !fields || fields.length === 0) {
@@ -203,14 +214,14 @@ app.post("/api/scrape", async (req, res) => {
     }
   });
 
+  stopScraping = false; // Reset cancellation flag.
   let browser;
-  stopScraping = false; // reset cancellation flag
 
   try {
-    browser = await puppeteer.launch({ headless: true });
+    browser = await puppeteer.launch({ headless: false });
     const page = await browser.newPage();
 
-    // Login to LinkedIn.
+    // Log in to LinkedIn.
     await login(page);
 
     // Scrape the data.
@@ -233,17 +244,13 @@ app.post("/api/scrape", async (req, res) => {
   }
 });
 
-// POST /api/stop endpoint to cancel scraping.
+// API Endpoint to stop the scraping process.
 app.post("/api/stop", (req, res) => {
   stopScraping = true;
   res.json({ message: "Scraping stopped" });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Express server listening on port ${PORT}`);
 });
-
-async function sleep(ms) {
-  return await new Promise((resolve, reject) => setTimeout(resolve, ms));
-}
